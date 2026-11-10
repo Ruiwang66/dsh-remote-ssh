@@ -75,6 +75,8 @@ window.__ModuleLoader__.load({
 .dshrs-field label{font-weight:600;font-size:12.5px}
 .dshrs-field input,.dshrs-field select{width:100%;min-width:0;box-sizing:border-box;min-height:30px;padding:0 8px;border-radius:7px;border:1px solid var(--dsw-alias-border-l1,var(--dsw-alias-stroke-primary,color-mix(in srgb,currentColor 24%,transparent)));background:var(--dsw-alias-bg-layer-1,transparent);color:inherit;font:inherit;font-size:13px}
 .dshrs-field input:focus,.dshrs-field select:focus{outline:none;border-color:var(--dsw-alias-brand-primary,currentColor)}
+.dshrs-check-row{display:flex;align-items:center;gap:6px;font-weight:500;font-size:12px;cursor:pointer}
+.dshrs-check-row input{width:13px;height:13px;min-height:0;margin:0;padding:0;flex:0 0 13px;accent-color:var(--dsw-alias-brand-primary,#247bbf)}
 .dshrs-hint{color:var(--dsw-alias-label-caption,var(--dsw-alias-label-secondary,currentColor));font-size:11px;opacity:.72}
 .dshrs-actions{display:flex;align-items:center;justify-content:flex-end;gap:6px}
 .dshrs-btn{min-height:28px;padding:0 11px;border-radius:7px;border:1px solid var(--dsw-alias-border-l1,var(--dsw-alias-stroke-primary,color-mix(in srgb,currentColor 22%,transparent)));background:var(--dsw-alias-bg-layer-1,transparent);color:inherit;font:inherit;font-size:13px;cursor:pointer}
@@ -115,6 +117,12 @@ window.__ModuleLoader__.load({
         authPassword: '密码',
         keyPath: '私钥路径（留空使用默认 id_ed25519 / id_ecdsa / id_rsa）',
         password: 'SSH 密码（只保存在本机 Host 内存）',
+        passwordStoredPlaceholder: '已保存，留空继续使用',
+        rememberPassword: '记住密码',
+        rememberPasswordHint: '保存在本机 DSH 凭据库（.credentials.yaml，仅当前系统用户可读）；取消勾选则只保存在 Host 内存，重启后需重新输入。',
+        passwordStoredShort: '已记住密码',
+        passwordRequired: '这台服务器使用密码认证，Host 重启后内存密码已清空，请重新输入并保存。',
+        enterPassword: '输入密码',
         remoteRoot: '默认工作目录',
         remoteRootHint: '远端默认 cwd，例如 /root 或 ~/project；不是路径沙箱。',
         testAndSave: '测试并保存',
@@ -162,6 +170,12 @@ window.__ModuleLoader__.load({
         authPassword: 'Password',
         keyPath: 'Key path (blank uses the default id_ed25519 / id_ecdsa / id_rsa)',
         password: 'SSH password (kept in this Host process only)',
+        passwordStoredPlaceholder: 'Saved — leave blank to reuse it',
+        rememberPassword: 'Remember password',
+        rememberPasswordHint: 'Stored in the local DSH credential file (.credentials.yaml, readable only by your OS user). Leave unchecked to keep it in Host memory only, which asks again after a restart.',
+        passwordStoredShort: 'password saved',
+        passwordRequired: 'This server uses password authentication, and the in-memory password was cleared when the Host restarted. Enter it again and save.',
+        enterPassword: 'Enter password',
         remoteRoot: 'Default working directory',
         remoteRootHint: 'Remote default cwd, for example /root or ~/project. This is not a path sandbox.',
         testAndSave: 'Test and save',
@@ -279,6 +293,7 @@ window.__ModuleLoader__.load({
         remoteRoot: server?.remoteRoot || '~',
       }))
       const [password, setPassword] = useState('')
+      const [remember, setRemember] = useState(true)
       const [busy, setBusy] = useState(false)
       const [status, setStatus] = useState({ kind: 'idle' })
       const [trustedFingerprint, setTrustedFingerprint] = useState('')
@@ -308,6 +323,7 @@ window.__ModuleLoader__.load({
               remoteRoot: form.remoteRoot.trim() || '~',
             },
             ...(form.authType === 'password' && password ? { password } : {}),
+            ...(form.authType === 'password' ? { rememberPassword: remember } : {}),
             ...(allowFingerprint ? { allowFingerprint } : {}),
           }
           const result = await rpc('server.testAndSave', payload)
@@ -372,7 +388,17 @@ window.__ModuleLoader__.load({
         form.authType === 'password'
           ? h('div', { className: 'dshrs-field' },
             h('label', null, t('password')),
-            h('input', { type: 'password', value: password, onChange: event => setPassword(event.target.value) }),
+            h('input', {
+              type: 'password',
+              value: password,
+              placeholder: server?.passwordStored ? t('passwordStoredPlaceholder') : '',
+              onChange: event => setPassword(event.target.value),
+            }),
+            h('label', { className: 'dshrs-check-row' },
+              h('input', { type: 'checkbox', checked: remember, onChange: event => setRemember(event.target.checked) }),
+              h('span', null, t('rememberPassword')),
+            ),
+            h('div', { className: 'dshrs-hint' }, t('rememberPasswordHint')),
           )
           : null,
         h(StatusBox, {
@@ -418,7 +444,11 @@ window.__ModuleLoader__.load({
           setStatus({ kind: 'idle' })
           reload()
         } catch (error) {
-          setStatus({ kind: 'error', title: t('failed'), message: String(error?.message || error) })
+          if (error?.code === 'PASSWORD_REQUIRED') {
+            setStatus({ kind: 'error', title: t('failed'), message: t('passwordRequired'), action: server })
+          } else {
+            setStatus({ kind: 'error', title: t('failed'), message: String(error?.message || error) })
+          }
         }
       }
 
@@ -431,7 +461,7 @@ window.__ModuleLoader__.load({
                 h(Dot, { state: connectionOf(state, server.id).state }),
                 h('span', null, server.name),
               ),
-              h('div', { className: 'dshrs-server-sub' }, `${server.username}@${server.host}:${server.port} · ${server.remoteRoot}`),
+              h('div', { className: 'dshrs-server-sub' }, `${server.username}@${server.host}:${server.port} · ${server.remoteRoot}${server.passwordStored ? ` · ${t('passwordStoredShort')}` : ''}`),
             ),
             h('div', { className: 'dshrs-mini' },
               h('button', { type: 'button', className: 'dshrs-btn', onClick: () => reconnect(server) }, t('reconnect')),
@@ -441,6 +471,11 @@ window.__ModuleLoader__.load({
           )))
           : h('div', { className: 'dshrs-empty' }, t('noServers')),
         h(StatusBox, { status, fingerprintHint: t('fingerprintHint'), trustLabel: t('trust'), cancelLabel: t('cancel') }),
+        status.action
+          ? h('div', { className: 'dshrs-actions' },
+            h('button', { type: 'button', className: 'dshrs-btn dshrs-btn-primary', onClick: () => onEdit(status.action) }, t('enterPassword')),
+          )
+          : null,
         h('div', { className: 'dshrs-actions' },
           h('button', { type: 'button', className: 'dshrs-btn', onClick: onAdd }, t('addServer')),
         ),

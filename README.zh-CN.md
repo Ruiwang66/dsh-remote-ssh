@@ -54,16 +54,12 @@ dsh web
 选择器位于对话输入框左侧。显示“本地电脑”时，官方工具在当前电脑上执行；
 点击即可展开执行环境菜单。
 
-![输入框左侧的执行环境选择器，当前为本地电脑](./assets/screenshots/environment-picker.png)
-
 ### 2. 选择或管理服务器
 
 菜单列出本地电脑和已保存的 SSH 服务器。选择一台服务器后，当前会话的文件、
 搜索、Shell 和终端工具会在该服务器上执行。
 点击“添加服务器…”创建连接，点击“管理服务器…”可重连、编辑或删除已有连接。
 若会话正在运行，需要等本轮结束后再切换环境。
-
-![执行环境菜单，包含已保存的服务器以及添加和管理入口](./assets/screenshots/server-menu.png)
 
 ### 3. 添加并测试连接
 
@@ -73,9 +69,7 @@ dsh web
 
 点击“测试并保存”。首次连接时，需先核对页面展示的 SHA256 主机指纹再信任。
 只有 SSH 握手、SFTP 和命令执行检查全部成功，插件才会保存服务器并将当前会话切换过去。
-密码仅保存在 Host 内存，Host 重启后需要重新输入。
-
-![添加服务器弹窗，包含连接信息、认证方式和默认工作目录](./assets/screenshots/add-server.png)
+密码默认记住在本机 DSH 凭据库（`.credentials.yaml`，仅当前系统用户可读），可在弹窗中取消“记住密码”；取消后只保存在 Host 内存，重启后需要重新输入。
 
 ## 架构
 
@@ -97,7 +91,7 @@ DSH 官方执行接口 ctx.fs · ctx.subprocess · ctx.shell · ctx.terminals
 | --- | --- |
 | SSH Agent | 只请求 Agent 签名，不读取私钥正文，也不启用 Agent Forwarding |
 | 私钥文件 | 只保存密钥路径，连接时读取文件 |
-| 临时密码 | 只保存在当前 DSH Host 进程内存，重启后需要重新输入 |
+| 临时密码 | 默认记住在本机凭据库；取消“记住密码”后只保存在当前 Host 进程内存，重启后需要重新输入 |
 
 ## 远端要求与安全边界
 
@@ -110,7 +104,7 @@ DSH 官方执行接口 ctx.fs · ctx.subprocess · ctx.shell · ctx.terminals
 
 ## 状态文件
 
-服务器列表与每个会话选择的执行环境保存在 `$DSH_HOME/remote-ssh/state.json`（默认 `~/.dsh/remote-ssh/state.json`），权限为 0600。密码不写入该文件。
+服务器列表与每个会话选择的执行环境保存在 `$DSH_HOME/remote-ssh/state.json`（默认 `~/.dsh/remote-ssh/state.json`），权限为 0600。密码不写入该文件；勾选“记住密码”时，密码作为插件凭据记录保存在 `$DSH_HOME/.credentials.yaml`（与 DSH 的 API Key 同一存储，仅当前系统用户可读）。
 
 ## 故障排查
 
@@ -118,7 +112,7 @@ DSH 官方执行接口 ctx.fs · ctx.subprocess · ctx.shell · ctx.terminals
 | --- | --- |
 | 保存时提示 `HTTP 404/405` 或“Host 插件未激活” | Host 半部没有激活，`/api/dsh-remote-ssh` 端点未注册，请求被静态页面接管。重启 DSH Desktop（确保托盘进程也退出）后重试；`npm test` 可验证接口本身。 |
 | 首次保存要求核对指纹 | 正常行为。确认指纹与服务器 `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` 一致后点“信任并保存”。 |
-| `AUTH_FAILED` | 用户名、密码或私钥不匹配；密码只保存在 Host 进程内存，重启后需要重新输入。 |
+| `AUTH_FAILED` | 用户名、密码或私钥不匹配；密码认证请重新输入并保存（已勾选“记住密码”则重启后自动复用）。 |
 | `NETWORK_REFUSED` / `NETWORK_TIMEOUT` | 地址、端口或防火墙问题，与插件无关。 |
 
 ## 测试

@@ -1,7 +1,7 @@
 # dsh-remote-ssh 交接说明（写给接手开发的 AI）
 
 > 目标读者：另一个 AI / 开发者。读完这份文档应能独立定位代码、修改功能、跑通测试，并避免踩已知的 DSH 0.2.2 组合坑。
-> 项目根目录：`E:\开发\dsh插件\dsh-remote-ssh`，包名 `dsh-remote-ssh`，当前版本 **2.0.2**。
+> 项目根目录：`E:\开发\dsh插件\dsh-remote-ssh`，包名 `dsh-remote-ssh`，当前版本 **2.0.3**。
 
 ---
 
@@ -18,7 +18,7 @@
 | Host 依赖 | **无运行时 npm 依赖**；ssh2 与所需 `@deepseek-ai/*` 全部打进 dist |
 | 内置资产 | `assets/rg-linux-{x64,arm64,arm}`（远端 ripgrep） |
 | 持久化 | `$DSH_HOME/remote-ssh/state.json`（默认 `~/.dsh/remote-ssh/state.json`，0600） |
-| 测试 | `npm test`：36 项端到端检查，全通过 |
+| 测试 | `npm test`：48 项端到端检查，全通过 |
 | 安装形态 | 已以 `link:` 方式装进 `C:\Users\a\.dsh\profiles\desktop`，profile 的 `dsh.profile.bundles` 含 `dsh-remote-ssh` |
 
 ---
@@ -29,7 +29,7 @@
 2. **模型可见的工具目录不变**：仍然是官方工具；变化的只是工具背后的 `ctx.fs / ctx.subprocess / ctx.shell / ctx.terminals` 等服务实例。
 3. **每个 Agent 一个隔离执行世界**：两个会话可以同时连同一台服务器，但不能共用 Provider 实例（否则 Cordis 服务重复注册）。
 4. **DSH Session/Workspace 元数据不变**：左侧工作区、历史分组、`SessionHeader.cwd` 都不改；只有模型上下文与工具执行位置变化。
-5. **密码不落盘**；私钥只存路径；日志不输出密码/私钥。
+5. **密码不写入 state.json**：默认保存为 DSH 凭据库中的插件记录（可在界面取消），否则只留在 Host 内存；私钥只存路径；日志不输出密码/私钥。
 
 ---
 
@@ -195,7 +195,7 @@ const response = await fetch('/api/dsh-remote-ssh', {
 | endpoint | payload | value |
 | --- | --- | --- |
 | `state` | `{ sessionId }` | `{ servers, target, generation, execution, busy, hostPlatform, connections, architecture }` |
-| `server.test` | `{ server, password?, allowFingerprint? }` | `{ ok, fingerprint, home, os, shell, sftp, auth, server }` |
+| `server.test` | `{ server, password?, allowFingerprint?, rememberPassword? }` | `{ ok, fingerprint, home, os, shell, sftp, auth, server }` |
 | `server.testAndSave` | 同上 | 同上；**连接成功后才写入 state** |
 | `server.remove` | `{ serverId }` | `{ removed: boolean }` |
 | `server.reconnect` | `{ serverId }` | `state` |
@@ -217,7 +217,7 @@ const response = await fetch('/api/dsh-remote-ssh', {
 | --- | --- |
 | `NETWORK_TIMEOUT` / `NETWORK_REFUSED` / `HOST_NOT_FOUND` | 网络层 |
 | `AUTH_FAILED` | 认证失败 |
-| `PASSWORD_REQUIRED` | 密码认证但 Host 内存里没有密码（重启后） |
+| `PASSWORD_REQUIRED` | 密码认证，但内存与凭据库都没有密码（未勾选记住或记录已删） |
 | `KEY_NOT_FOUND` / `KEY_PASSPHRASE_REQUIRED` | 私钥缺失 / 带口令 |
 | `AGENT_UNAVAILABLE` | 没有可用 ssh-agent |
 | `HOST_KEY_UNTRUSTED` | 首次连接，`details.fingerprint` 供 UI 信任 |
@@ -230,7 +230,7 @@ const response = await fetch('/api/dsh-remote-ssh', {
 
 - **池化**：`ConnectionManager` 是 Host 级单例，按 `server.id` 复用一个 `ssh2.Client`；`sftp()` 懒建并复用 SFTP 通道。
 - **认证候选**：
-  - `password`：只接受本次 RPC 传入或内存中记住的密码；
+  - `password`：本次 RPC 传入 → 内存 → 凭据库记录（键 `dsh-remote-ssh/<serverId，_→->`）依次解析；
   - `key`：读取 `auth.keyPath`（支持 `~`），否则尝试 `~/.ssh/id_ed25519|id_ecdsa|id_rsa`；
   - `agent`：`SSH_AUTH_SOCK` + Windows `\\.\pipe\openssh-ssh-agent`。
 - **指纹**：`hostVerifier` 依次判定
@@ -238,7 +238,7 @@ const response = await fetch('/api/dsh-remote-ssh', {
   2. 已保存 `hostKeyFingerprint`
   3. `known_hosts`（含 hashed 条目）
 - **probe vs pool**：`test()` 用**临时连接**验证（必须把密码显式传进 `#open`，历史 bug）；`ensure()` 才建池。
-- **密码生命周期**：`rememberPassword()` 存 `Buffer`，`forgetPassword()` 清零；`dispose()` 全清；**永不写盘**。
+- **密码生命周期**：`rememberPassword()` 存 `Buffer`，`forgetPassword()` 清零；勾选“记住密码”时写成凭据库 grant 记录（`modifyRecord`），取消勾选、切换认证方式或删除服务器时 `deleteRecord`；`state.json` 永不出现密码。会话在 Host 重启后的第一轮 `agent/pre-step` 也会先做凭据解析再连 SSH。
 - **错误分类**：统一转成 `RemoteRuntimeError(code, message, details)`，UI 直接展示 message。
 - **事件安全**：`client.on('error')` 用持久监听，避免 ssh2 多次 error 造成未捕获异常杀进程。
 
@@ -314,7 +314,8 @@ const response = await fetch('/api/dsh-remote-ssh', {
 ```
 
 - 原子写：临时文件 + rename；`mode 0600`。
-- **servers 里永远没有 password 字段**。
+- **servers 里永远没有 password 字段**；`state` 只额外返回 `passwordStored: boolean`（凭据库里是否存在记录）。
+- 勾选“记住密码”时，密码写入 `$DSH_HOME/.credentials.yaml` 的 `records["dsh-remote-ssh/<id>"] = { kind: "grant", payload: { password } }`；取消勾选、改为 key/agent、删除服务器都会 `deleteRecord`。
 - 删除服务器会把它从各会话目标中移除并 bump generation。
 
 ### 8.2 执行环境上下文
@@ -344,7 +345,7 @@ const response = await fetch('/api/dsh-remote-ssh', {
 - UI 组成：
   - 触发器：服务器图标 + 当前目标名 + 下拉箭头；
   - 弹出菜单：本地电脑 / 已保存服务器（状态点）/ 添加 / 管理；运行中禁用；
-  - 添加/编辑弹窗：名称、主机、端口、用户名、认证方式（Agent/私钥/密码）、默认目录、密码（仅内存）；
+  - 添加/编辑弹窗：名称、主机、端口、用户名、认证方式（Agent/私钥/密码）、默认目录、密码（可记住/仅内存）；
   - 指纹信任：`HOST_KEY_UNTRUSTED` / `HOST_KEY_CHANGED` 时展示 `SHA256:…`，用户确认后带 `allowFingerprint` 重试；
   - 保存成功自动 `target.set` 切到该服务器；
   - 管理弹窗：重连 / 编辑 / 删除。
@@ -381,7 +382,7 @@ npm test        :: 端到端测试
 1. 用 `ssh2` 在本机起一个真实 SSH 服务器（密码 + 公钥、exec、SFTP REALPATH）；
 2. 按真实 Desktop 组合搭 Context：`webServer` 是**同级** fiber，Connection 在自己的 fiber（`inject: ['credentials']`）；
 3. 通过真实 `createSharedFetchHandler('/api')` 调 `POST /api/dsh-remote-ssh`；
-4. 断言 36 项：状态、非 POST 拒绝、未信任指纹、错误密码不保存、正确密码保存、私钥登录、拒绝端口、`target.set`、`remove`、磁盘重读、无密码落盘等。
+4. 断言 48 项：状态、非 POST 拒绝、未信任指纹、错误密码不保存、正确密码保存、记住/取消记住、**模拟 Host 重启后从凭据库自动重连**、私钥登录、拒绝端口、`target.set`、`remove`、磁盘重读、无密码落盘等。
 
 离线 harness（都需要 `../ref/dsh-0.2.2`）：
 
@@ -402,7 +403,7 @@ node scripts/harness-client.mjs           # 浏览器半部加载 + slot 注册
 ## 12. 已知限制
 
 1. **没有远端沙箱**：`sandboxPolicy` 固定 `danger-full-access`；权限 = SSH 账号。不要在远端假装有 `workspace-write`。
-2. **密码只在内存**：Host 重启后需重新输入（这是设计选择，避免落盘）。
+2. **密码默认记住**：保存在本机凭据库（与 API Key 同一文件，明文 YAML、0600）；可在弹窗取消勾选改为仅内存。
 3. **ripgrep 仅 Linux**：非 Linux 远端会在 `glob/grep` 时明确报错。
 4. **`fs.watch` 不支持**：依赖文件监听的 UI 在远端模式下不可用。
 5. **紧耦合 0.2.2**：`inject` 名称、`fetch.register`、工具包内部结构变化都可能需要适配；升级 DSH 后先跑 `npm test` 与 harness。
@@ -453,8 +454,8 @@ node scripts/harness-client.mjs           # 浏览器半部加载 + slot 注册
 | --- | --- | --- |
 | 插件卡片“异常：cannot get property webServer without inject” | 用了 `rpc.handle` 或旧版本 dist | 用 `fetch.register`；重新 `npm run build` 并重启 Host |
 | 保存报 HTTP 404/405 | Host 插件未激活 / 端点未注册 | `plugin_manager list_plugins` 看 `include:dsh-remote-ssh` 的 `fiberPhase` 与 `diagnostic`；重启 Desktop |
-| `AUTH_FAILED` | 用户名/密码/私钥不匹配 | 检查认证方式；密码服务器重启后需重输 |
-| `PASSWORD_REQUIRED` | Host 内存无密码 | 重新“测试并保存”输入密码 |
+| `AUTH_FAILED` | 用户名/密码/私钥不匹配 | 检查认证方式；密码错误时重新输入并保存 |
+| `PASSWORD_REQUIRED` | 内存和凭据库都没有密码 | 在管理弹窗点“输入密码”，或编辑后“测试并保存”并勾选记住 |
 | `HOST_KEY_UNTRUSTED` | 首次连接 | 核对指纹后“信任并保存” |
 | `HOST_KEY_CHANGED` | 服务器重装/换钥，或 MITM | 核对后再信任 |
 | `NETWORK_REFUSED` / `NETWORK_TIMEOUT` | 网络/端口/防火墙 | 先在本地 `ssh` 验证 |
@@ -474,7 +475,7 @@ cordis_inspect_query(host, Service, listService, {service:'webServer'})
 ## 15. 交接自检清单（接手者第一次上手）
 
 - [ ] `npm run check` 通过
-- [ ] `npm test` 36/36
+- [ ] `npm test` 48/48
 - [ ] 读一遍 `src/index.js` 的 `business()` 与 `apply()` 末尾的 RPC 注册
 - [ ] 读一遍 `src/remote-realm.js` 的挂载顺序
 - [ ] 读一遍 `scripts/harness-connection-context.mjs`（理解为什么不能 `rpc.handle`）

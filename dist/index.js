@@ -20810,11 +20810,6 @@ var ConnectionManager = class {
   }
 };
 
-// src/remote-fs.js
-import { randomUUID as randomUUID3 } from "node:crypto";
-import { posix as posix2 } from "node:path";
-import { TextDecoder as TextDecoder2 } from "node:util";
-
 // ../ref/dsh-0.2.2/@deepseek-ai/cosmokit/lib/index.js
 function isNullable(value) {
   return value === null || value === void 0;
@@ -22872,6 +22867,23 @@ var Service = class Service2 {
     return false;
   }
 };
+
+// ../ref/dsh-0.2.2/@deepseek-ai/dsh-brand/lib/index.js
+function brandString(value) {
+  return value;
+}
+
+// ../ref/dsh-0.2.2/@deepseek-ai/dsh-credentials/lib/index.js
+var KEY_SEGMENT_PATTERN = /^[a-z][a-z0-9-]*$/;
+function credentialKey(scope, id) {
+  for (const segment of [scope, id]) if (!KEY_SEGMENT_PATTERN.test(segment)) throw new TypeError(`credential key segment "${segment}" must match ${String(KEY_SEGMENT_PATTERN)}`);
+  return brandString(`${scope}/${id}`);
+}
+
+// src/remote-fs.js
+import { randomUUID as randomUUID3 } from "node:crypto";
+import { posix as posix2 } from "node:path";
+import { TextDecoder as TextDecoder2 } from "node:util";
 
 // ../ref/dsh-0.2.2/@deepseek-ai/dsh-llm/lib/index.js
 import { createRequire } from "node:module";
@@ -38029,6 +38041,7 @@ async function apply6(ctx, config = {}) {
       const current = realms.get(sessionId2);
       if (current?.serverId === server.id && current.signature === signature) return;
       await disposeRealm(sessionId2);
+      await resolvePassword(server);
       const environment = await resolveRemoteEnvironment(connections, server);
       const handle = await mountRemoteExecutionRealm(agent, {
         server,
@@ -38127,8 +38140,68 @@ async function apply6(ctx, config = {}) {
     disposeExecutionContext(id);
     void disposeRealm(id);
   });
-  const stateView = (sessionId2) => {
-    const servers = store.listServersNow();
+  function passwordRecordKey(serverId) {
+    const raw = String(serverId || "").toLowerCase().replaceAll("_", "-");
+    if (!/^[a-z][a-z0-9-]*$/u.test(raw)) return void 0;
+    try {
+      return credentialKey("dsh-remote-ssh", raw);
+    } catch {
+      return void 0;
+    }
+  }
+  function credentialStore() {
+    return ctx.get("credentials");
+  }
+  async function readStoredPassword(serverId) {
+    const service = credentialStore();
+    const key = passwordRecordKey(serverId);
+    if (!service || !key) return void 0;
+    try {
+      const record = await service.readRecord(key);
+      const password = record?.kind === "grant" ? record.payload?.password : void 0;
+      return typeof password === "string" && password.length > 0 ? password : void 0;
+    } catch (error) {
+      ctx.logger?.warn?.(`DSH Remote SSH credential record ${String(serverId)} read failed: ${String(error)}`);
+      return void 0;
+    }
+  }
+  async function writeStoredPassword(serverId, password) {
+    const service = credentialStore();
+    const key = passwordRecordKey(serverId);
+    if (!service || !key || !password) return false;
+    try {
+      await service.modifyRecord(key, async () => ({ kind: "grant", payload: { password } }));
+      return true;
+    } catch (error) {
+      ctx.logger?.warn?.(`DSH Remote SSH credential record ${String(serverId)} write failed: ${String(error)}`);
+      return false;
+    }
+  }
+  async function clearStoredPassword(serverId) {
+    const service = credentialStore();
+    const key = passwordRecordKey(serverId);
+    if (!service || !key) return;
+    try {
+      await service.deleteRecord(key);
+    } catch (error) {
+      ctx.logger?.warn?.(`DSH Remote SSH credential record ${String(serverId)} delete failed: ${String(error)}`);
+    }
+  }
+  async function resolvePassword(server, provided) {
+    if (server?.auth?.type !== "password") return void 0;
+    const explicit = typeof provided === "string" && provided ? provided : void 0;
+    if (explicit) return explicit;
+    const remembered = connections.passwordOf(server.id);
+    if (remembered) return remembered;
+    const stored = await readStoredPassword(server.id);
+    if (stored) connections.rememberPassword(server.id, stored);
+    return stored;
+  }
+  const stateView = async (sessionId2) => {
+    const servers = await Promise.all(store.listServersNow().map(async (server) => ({
+      ...server,
+      ...server.auth?.type === "password" ? { passwordStored: Boolean(await readStoredPassword(server.id)) } : {}
+    })));
     return {
       servers,
       target: store.getTargetNow(sessionId2),
@@ -38146,14 +38219,14 @@ async function apply6(ctx, config = {}) {
     switch (String(method)) {
       case "state":
         if (!sessionId2) throw new Error("sessionId is required");
-        return stateView(sessionId2);
+        return await stateView(sessionId2);
       case "server.test": {
         const candidate = validateServerInput(body.server, body.server?.id);
         const peer = `${candidate.username}@${candidate.host}:${candidate.port}`;
         ctx.logger?.info?.(`DSH Remote SSH SSH test ${peer} start`);
         const result = await connections.test(candidate, {
           signal,
-          password: candidate.auth?.type === "password" && typeof body.password === "string" ? body.password : void 0,
+          password: await resolvePassword(candidate, body.password),
           allowFingerprint: body.allowFingerprint ? String(body.allowFingerprint) : void 0
         });
         ctx.logger?.info?.(`DSH Remote SSH SSH test ${peer} complete auth=${result.auth}`);
@@ -38170,7 +38243,8 @@ async function apply6(ctx, config = {}) {
         if (old && !candidate.hostKeyFingerprint && candidate.host === old.host && candidate.port === old.port && candidate.username === old.username) {
           candidate.hostKeyFingerprint = old.hostKeyFingerprint;
         }
-        const password = candidate.auth?.type === "password" ? typeof body.password === "string" && body.password ? body.password : existingId ? connections.passwordOf(existingId) : void 0 : void 0;
+        const password = await resolvePassword(candidate, body.password);
+        const remember = body.rememberPassword !== false;
         const peer = `${candidate.username}@${candidate.host}:${candidate.port}`;
         ctx.logger?.info?.(`DSH Remote SSH SSH test+save ${peer} start`);
         const result = await connections.test(candidate, {
@@ -38183,8 +38257,11 @@ async function apply6(ctx, config = {}) {
         if (old) connections.invalidate(saved.id);
         if (tested.auth?.type === "password") {
           if (password) connections.rememberPassword(saved.id, password);
+          if (remember && password) await writeStoredPassword(saved.id, password);
+          else await clearStoredPassword(saved.id);
         } else {
           connections.forgetPassword(saved.id);
+          await clearStoredPassword(saved.id);
         }
         await refreshRealmsUsingServer(saved.id);
         const next = store.getServerNow(saved.id);
@@ -38201,6 +38278,7 @@ async function apply6(ctx, config = {}) {
         const removed = await store.removeServer(id);
         connections.invalidate(id);
         connections.forgetPassword(id);
+        await clearStoredPassword(id);
         await Promise.all(affected.map((affectedSessionId) => syncSessionRealm(affectedSessionId)));
         if (removed && removedServer) {
           for (const affectedSessionId of affected) {
@@ -38219,8 +38297,9 @@ async function apply6(ctx, config = {}) {
         const server = store.getServerNow(id);
         if (!server) throw new Error("\u670D\u52A1\u5668\u4E0D\u5B58\u5728");
         connections.invalidate(id);
+        await resolvePassword(server);
         await connections.ensure(server, { signal });
-        return stateView(sessionId2);
+        return await stateView(sessionId2);
       }
       case "target.set": {
         if (!sessionId2) throw new Error("sessionId is required");
@@ -38229,7 +38308,10 @@ async function apply6(ctx, config = {}) {
         const next = body.target?.type === "ssh" ? { type: "ssh", serverId: String(body.target.serverId || "") } : { type: "local" };
         const server = next.type === "ssh" ? store.getServerNow(next.serverId) : void 0;
         if (next.type === "ssh" && !server) throw new Error("\u9009\u62E9\u7684\u670D\u52A1\u5668\u4E0D\u5B58\u5728");
-        if (server) await connections.ensure(server, { signal });
+        if (server) {
+          await resolvePassword(server);
+          await connections.ensure(server, { signal });
+        }
         const changed = !targetEquals(previous, next);
         await store.setTarget(sessionId2, next, { bumpGeneration: false });
         try {
@@ -38251,7 +38333,7 @@ async function apply6(ctx, config = {}) {
           });
         }
         ctx.logger?.info?.(`DSH Remote SSH execution handoff ${sessionId2}: ${previous.type === "ssh" ? previous.serverId : "local"} -> ${next.type === "ssh" ? next.serverId : "local"} generation=${store.getGenerationNow(sessionId2)}`);
-        return stateView(sessionId2);
+        return await stateView(sessionId2);
       }
       default:
         throw new Error(`unknown remote runtime RPC method: ${String(method)}`);

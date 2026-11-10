@@ -61,8 +61,6 @@ The picker appears at the left of the conversation input. “本地电脑” mea
 “Local computer”: the native tools currently execute on your own computer.
 Click it to choose a different execution environment.
 
-![Execution-environment picker showing Local computer](./assets/screenshots/environment-picker.png)
-
 ### 2. Choose or manage a server
 
 The menu lists the local computer and saved SSH servers. Select a server to
@@ -70,8 +68,6 @@ run the conversation's file, search, shell, and terminal tools on that host.
 Use “添加服务器…” (Add server) to create a connection, or “管理服务器…”
 (Manage servers) to reconnect, edit, or remove saved connections. Wait until
 the current turn finishes before switching environments.
-
-![Execution-environment menu with saved servers and add/manage actions](./assets/screenshots/server-menu.png)
 
 ### 3. Add and test a connection
 
@@ -83,10 +79,9 @@ directory sets the default `cwd` and does not restrict access to other paths.
 Click “测试并保存” (Test and save). On first connection, verify the displayed
 SHA256 host-key fingerprint before trusting it. The plugin saves the server
 only after the SSH handshake, SFTP, and command execution checks succeed,
-then selects it for the conversation. Passwords stay in Host memory and
-must be entered again after a Host restart.
-
-![Add server dialog with connection, authentication, and working-directory fields](./assets/screenshots/add-server.png)
+then selects it for the conversation. Passwords are remembered in the local DSH
+credential file by default (clear “Remember password” to keep them in Host
+memory only).
 
 ## Architecture
 
@@ -108,7 +103,7 @@ one isolated execution world per Agent (Cordis isolation scopes)
 | --- | --- |
 | SSH Agent | Asks the agent to sign; never reads key material and never enables agent forwarding |
 | Private-key file | Stores only the path and reads the file when connecting |
-| Ephemeral password | Kept in the current DSH Host process memory only; a restart forgets it |
+| Password | Remembered in the local DSH credential file by default; unchecking “Remember password” keeps it in the current Host process only |
 
 ## Remote requirements and security boundary
 
@@ -121,7 +116,7 @@ one isolated execution world per Agent (Cordis isolation scopes)
 
 ## State
 
-Saved servers and the per-session execution target live in `$DSH_HOME/remote-ssh/state.json` (default `~/.dsh/remote-ssh/state.json`, mode 0600). Passwords are never written there.
+Saved servers and the per-session execution target live in `$DSH_HOME/remote-ssh/state.json` (default `~/.dsh/remote-ssh/state.json`, mode 0600). Passwords are never written there; with “Remember password” checked, the password is kept as a plugin credential record in `$DSH_HOME/.credentials.yaml` (the same store as DSH API keys, readable only by your OS user).
 
 ## License
 

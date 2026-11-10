@@ -15,9 +15,9 @@ npm test
 - 用 `ssh2` 在本机启动一个真实 SSH 服务器（密码 + 公钥认证、exec、SFTP REALPATH）；
 - 按真实 Desktop 组合搭建 Context：`webServer` 来自同级插件 fiber，Connection 服务位于自己的 fiber（`inject: ['credentials']`）；
 - 通过真实的 `createSharedFetchHandler('/api')` 调用本插件的 `POST /api/dsh-remote-ssh`；
-- 覆盖：`state`、非 POST 拒绝、未信任指纹、错误密码、正确密码保存、私钥登录、连接拒绝、`target.set`、删除、保存后重新读取。
+- 覆盖：`state`、非 POST 拒绝、未信任指纹、错误密码、正确密码保存、记住/取消记住密码、**模拟 Host 重启后从凭据库自动重连**、私钥登录、连接拒绝、`target.set`、删除、保存后重新读取。
 
-当前结果：**36 passed, 0 failed**。
+当前结果：**48 passed, 0 failed**。
 
 `scripts/harness-connection-context.mjs` 单独证明 0.2.2 的组合约束：在该布局下
 `ctx.connection.rpc.handle()` 必然抛 `cannot get property "webServer" without inject`，

@@ -1,4 +1,5 @@
 import { ConnectionManager, RemoteRuntimeError } from './connection-manager.js'
+import { credentialKey } from '@deepseek-ai/dsh-credentials'
 import { SshFileSystem, resolveRemoteEnvironment } from './remote-fs.js'
 import { SshSubprocessRuntime } from './remote-subprocess.js'
 import { mountRemoteExecutionRealm } from './remote-realm.js'
@@ -269,6 +270,9 @@ export async function apply(ctx, config = {}) {
       if (current?.serverId === server.id && current.signature === signature) return
 
       await disposeRealm(sessionId)
+      // A session that already targets this server must reconnect on the first
+      // turn after a Host restart, before any UI call can hydrate the password.
+      await resolvePassword(server)
       const environment = await resolveRemoteEnvironment(connections, server)
       const handle = await mountRemoteExecutionRealm(agent, {
         server,
@@ -370,8 +374,74 @@ export async function apply(ctx, config = {}) {
     void disposeRealm(id)
   })
 
-  const stateView = sessionId => {
-    const servers = store.listServersNow()
+  // Stored SSH passwords are durable *credential records* in the Host
+  // credential store (`<scope>/<id>`), never part of state.json. The record
+  // keeps a grant payload with only the password; removing it falls back to
+  // the in-memory password and then to an explicit prompt.
+  function passwordRecordKey(serverId) {
+    const raw = String(serverId || '').toLowerCase().replaceAll('_', '-')
+    if (!/^[a-z][a-z0-9-]*$/u.test(raw)) return undefined
+    try { return credentialKey('dsh-remote-ssh', raw) } catch { return undefined }
+  }
+
+  function credentialStore() {
+    return ctx.get('credentials')
+  }
+
+  async function readStoredPassword(serverId) {
+    const service = credentialStore()
+    const key = passwordRecordKey(serverId)
+    if (!service || !key) return undefined
+    try {
+      const record = await service.readRecord(key)
+      const password = record?.kind === 'grant' ? record.payload?.password : undefined
+      return typeof password === 'string' && password.length > 0 ? password : undefined
+    } catch (error) {
+      ctx.logger?.warn?.(`DSH Remote SSH credential record ${String(serverId)} read failed: ${String(error)}`)
+      return undefined
+    }
+  }
+
+  async function writeStoredPassword(serverId, password) {
+    const service = credentialStore()
+    const key = passwordRecordKey(serverId)
+    if (!service || !key || !password) return false
+    try {
+      await service.modifyRecord(key, async () => ({ kind: 'grant', payload: { password } }))
+      return true
+    } catch (error) {
+      ctx.logger?.warn?.(`DSH Remote SSH credential record ${String(serverId)} write failed: ${String(error)}`)
+      return false
+    }
+  }
+
+  async function clearStoredPassword(serverId) {
+    const service = credentialStore()
+    const key = passwordRecordKey(serverId)
+    if (!service || !key) return
+    try { await service.deleteRecord(key) }
+    catch (error) { ctx.logger?.warn?.(`DSH Remote SSH credential record ${String(serverId)} delete failed: ${String(error)}`) }
+  }
+
+  /** Password resolution order: explicit input → process memory → stored record. */
+  async function resolvePassword(server, provided) {
+    if (server?.auth?.type !== 'password') return undefined
+    const explicit = typeof provided === 'string' && provided ? provided : undefined
+    if (explicit) return explicit
+    const remembered = connections.passwordOf(server.id)
+    if (remembered) return remembered
+    const stored = await readStoredPassword(server.id)
+    if (stored) connections.rememberPassword(server.id, stored)
+    return stored
+  }
+
+  const stateView = async sessionId => {
+    const servers = await Promise.all(store.listServersNow().map(async server => ({
+      ...server,
+      ...(server.auth?.type === 'password'
+        ? { passwordStored: Boolean(await readStoredPassword(server.id)) }
+        : {}),
+    })))
     return {
       servers,
       target: store.getTargetNow(sessionId),
@@ -391,7 +461,7 @@ export async function apply(ctx, config = {}) {
     switch (String(method)) {
       case 'state':
         if (!sessionId) throw new Error('sessionId is required')
-        return stateView(sessionId)
+        return await stateView(sessionId)
 
       case 'server.test': {
         const candidate = validateServerInput(body.server, body.server?.id)
@@ -399,7 +469,7 @@ export async function apply(ctx, config = {}) {
         ctx.logger?.info?.(`DSH Remote SSH SSH test ${peer} start`)
         const result = await connections.test(candidate, {
           signal,
-          password: candidate.auth?.type === 'password' && typeof body.password === 'string' ? body.password : undefined,
+          password: await resolvePassword(candidate, body.password),
           allowFingerprint: body.allowFingerprint ? String(body.allowFingerprint) : undefined,
         })
         ctx.logger?.info?.(`DSH Remote SSH SSH test ${peer} complete auth=${result.auth}`)
@@ -419,11 +489,8 @@ export async function apply(ctx, config = {}) {
         if (old && !candidate.hostKeyFingerprint && candidate.host === old.host && candidate.port === old.port && candidate.username === old.username) {
           candidate.hostKeyFingerprint = old.hostKeyFingerprint
         }
-        const password = candidate.auth?.type === 'password'
-          ? (typeof body.password === 'string' && body.password
-            ? body.password
-            : (existingId ? connections.passwordOf(existingId) : undefined))
-          : undefined
+        const password = await resolvePassword(candidate, body.password)
+        const remember = body.rememberPassword !== false
         const peer = `${candidate.username}@${candidate.host}:${candidate.port}`
         ctx.logger?.info?.(`DSH Remote SSH SSH test+save ${peer} start`)
         const result = await connections.test(candidate, {
@@ -436,8 +503,11 @@ export async function apply(ctx, config = {}) {
         if (old) connections.invalidate(saved.id)
         if (tested.auth?.type === 'password') {
           if (password) connections.rememberPassword(saved.id, password)
+          if (remember && password) await writeStoredPassword(saved.id, password)
+          else await clearStoredPassword(saved.id)
         } else {
           connections.forgetPassword(saved.id)
+          await clearStoredPassword(saved.id)
         }
         await refreshRealmsUsingServer(saved.id)
         const next = store.getServerNow(saved.id)
@@ -455,6 +525,7 @@ export async function apply(ctx, config = {}) {
         const removed = await store.removeServer(id)
         connections.invalidate(id)
         connections.forgetPassword(id)
+        await clearStoredPassword(id)
         await Promise.all(affected.map(affectedSessionId => syncSessionRealm(affectedSessionId)))
         if (removed && removedServer) {
           for (const affectedSessionId of affected) {
@@ -474,8 +545,9 @@ export async function apply(ctx, config = {}) {
         const server = store.getServerNow(id)
         if (!server) throw new Error('服务器不存在')
         connections.invalidate(id)
+        await resolvePassword(server)
         await connections.ensure(server, { signal })
-        return stateView(sessionId)
+        return await stateView(sessionId)
       }
 
       case 'target.set': {
@@ -490,7 +562,10 @@ export async function apply(ctx, config = {}) {
 
         // Connectivity is validated before the session's logical execution
         // world changes; a failed SSH handshake leaves the world untouched.
-        if (server) await connections.ensure(server, { signal })
+        if (server) {
+          await resolvePassword(server)
+          await connections.ensure(server, { signal })
+        }
         const changed = !targetEquals(previous, next)
         await store.setTarget(sessionId, next, { bumpGeneration: false })
         try {
@@ -511,7 +586,7 @@ export async function apply(ctx, config = {}) {
           })
         }
         ctx.logger?.info?.(`DSH Remote SSH execution handoff ${sessionId}: ${previous.type === 'ssh' ? previous.serverId : 'local'} -> ${next.type === 'ssh' ? next.serverId : 'local'} generation=${store.getGenerationNow(sessionId)}`)
-        return stateView(sessionId)
+        return await stateView(sessionId)
       }
 
       default:

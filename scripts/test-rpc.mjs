@@ -81,76 +81,88 @@ const sshPort = sshServer.address().port
 // and the Connection service lives in its own fiber (`inject: ['credentials']`).
 // A generic rpc.handle() channel cannot work there; the exact /api Fetch route
 // can, which is what this test exercises.
-const routes = []
-let connectionService
-const root = new Context()
-root.provide('credentials', {
-  async readRecord() { return undefined },
-  async modifyRecord() { return undefined },
-  async resolve() { return undefined },
-  async describe() { return { known: false } },
-  async describeRecord() { return { known: false } },
-  async listRecords() { return [] },
-  async set() {},
-  async unset() {},
-  async deleteRecord() {},
-})
-root.provide('agents', { get: () => undefined })
-root.provide('systemPrompt', { context: () => () => {} })
-
-await root.plugin({
-  name: 'web-server-double',
-  apply(ctx) {
-    ctx.provide('webServer', {
-      protocol: 'http:',
-      port: 0,
-      register(route) { routes.push(route); return () => {} },
-      collectIndexInjections() { return [] },
-    })
-  },
-}).await()
-
-const connectionFiber = root.plugin({
-  name: 'client-connection-double',
-  inject: ['credentials'],
-  apply(ctx) {
-    connectionService = new HostConnectionService(ctx, [], {
-      isAuthenticated: () => true,
-      authenticateApi: () => undefined,
-      authorizeConnect() {},
-      authorizeIndex() { return true },
-    })
-  },
-})
-await connectionFiber.await()
-
 const plugin = await import('../dist/index.js')
-const fiber = root.plugin(plugin, {})
-await fiber.await()
+
+// One in-memory credential store shared by every simulated Host restart.
+const credentialRecords = new Map()
+
+function credentialService() {
+  return {
+    async readRecord(key) { return credentialRecords.get(String(key)) },
+    async modifyRecord(key, mutate) {
+      const next = await mutate(credentialRecords.get(String(key)))
+      if (next !== undefined) credentialRecords.set(String(key), next)
+      return next
+    },
+    async deleteRecord(key) { credentialRecords.delete(String(key)) },
+    async describeRecord(key) { return { configured: credentialRecords.has(String(key)), writable: true } },
+    async listRecords() { return [...credentialRecords.keys()].map(key => ({ key, kind: 'grant' })) },
+    async resolve() { return undefined },
+    async describe() { return { configured: false, writable: true } },
+    async set() {},
+    async unset() {},
+  }
+}
+
+async function createHost() {
+  let connectionService
+  const routes = []
+  const root = new Context()
+  root.provide('credentials', credentialService())
+  root.provide('agents', { get: () => undefined })
+  root.provide('systemPrompt', { context: () => () => {} })
+
+  await root.plugin({
+    name: 'web-server-double',
+    apply(ctx) {
+      ctx.provide('webServer', {
+        protocol: 'http:',
+        port: 0,
+        register(route) { routes.push(route); return () => {} },
+        collectIndexInjections() { return [] },
+      })
+    },
+  }).await()
+
+  await root.plugin({
+    name: 'client-connection-double',
+    inject: ['credentials'],
+    apply(ctx) {
+      connectionService = new HostConnectionService(ctx, [], {
+        isAuthenticated: () => true,
+        authenticateApi: () => undefined,
+        authorizeConnect() {},
+        authorizeIndex() { return true },
+      })
+    },
+  }).await()
+
+  const fiber = root.plugin(plugin, {})
+  await fiber.await()
+  const shared = connectionService.createSharedFetchHandler('/api')
+
+  async function call(method, payload = {}) {
+    const response = await shared.fetch(new Request('http://127.0.0.1/api/dsh-remote-ssh', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ endpoint: method, payload }),
+    }), connectionService.browserPeer)
+    check(`HTTP ${method} status 200`, response.status === 200, response.status)
+    const body = await response.json()
+    if (body.ok !== true) return { ok: false, error: body.error }
+    return { ok: true, value: body.value }
+  }
+
+  return { root, fiber, shared, call, routes, peer: connectionService.browserPeer }
+}
+
+const host = await createHost()
+const shared = host.shared
+const call = host.call
 console.log('plugin mounted; inject:', plugin.inject.join(','))
 
-const shared = connectionService.createSharedFetchHandler('/api')
-
-const methodsProbe = await shared.fetch(new Request('http://127.0.0.1/api/dsh-remote-ssh', { method: 'GET' }), connectionService.browserPeer)
+const methodsProbe = await shared.fetch(new Request('http://127.0.0.1/api/dsh-remote-ssh', { method: 'GET' }), host.peer)
 check('non-POST method is refused', methodsProbe.status === 404, methodsProbe.status)
-
-let rpcCounter = 0
-async function rpc(method, payload = {}) {
-  const request = new Request('http://127.0.0.1/api/dsh-remote-ssh', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ endpoint: method, payload }),
-  })
-  const response = await shared.fetch(request, connectionService.browserPeer)
-  check(`HTTP ${method} status 200`, response.status === 200, response.status)
-  return response.json()
-}
-
-async function call(method, payload) {
-  const result = await rpc(method, payload)
-  if (result.ok !== true) return { ok: false, error: result.error }
-  return { ok: true, value: result.value }
-}
 
 // ------------------------------------------------------------------- tests
 async function runTests() {
@@ -192,6 +204,27 @@ const statePath = join(process.env.DSH_HOME, 'remote-ssh', 'state.json')
 const onDisk = readFileSync(statePath, 'utf8')
 check('state file persists the server', onDisk.includes(savedServer.id))
 check('state file contains no password value or password key', !onDisk.includes('s3cret') && !onDisk.toLowerCase().includes('"password":'))
+check('remembered password is stored as a credential record', credentialRecords.size === 1)
+const withStored = await call('state', { sessionId: 'sess-test' })
+check('state reports passwordStored without the value', withStored.ok
+  && withStored.value.servers.find(server => server.id === savedServer.id)?.passwordStored === true
+  && !JSON.stringify(withStored.value).includes('s3cret'))
+
+console.log('\n[4b] remembering is opt-out')
+const forgotten = await call('server.testAndSave', {
+  sessionId: 'sess-test',
+  server: { ...serverBase, id: savedServer.id },
+  password: 's3cret',
+  rememberPassword: false,
+})
+check('rememberPassword:false clears the record', forgotten.ok === true && credentialRecords.size === 0, forgotten.error)
+const remembered = await call('server.testAndSave', {
+  sessionId: 'sess-test',
+  server: { ...serverBase, id: savedServer.id },
+  password: 's3cret',
+  rememberPassword: true,
+})
+check('rememberPassword:true stores the record again', remembered.ok === true && credentialRecords.size === 1, remembered.error)
 
 console.log('\n[5] re-test of the saved server reuses the trusted fingerprint')
 const retest = await call('server.testAndSave', { sessionId: 'sess-test', server: { ...serverBase, id: savedServer.id }, password: 's3cret' })
@@ -220,14 +253,25 @@ check('target.set connects and commits', switched.ok === true && switched.value.
 const afterSwitch = await call('state', { sessionId: 'sess-test' })
 check('state reports ssh target', afterSwitch.ok && afterSwitch.value.target.serverId === savedServer.id)
 
-console.log('\n[9] removing a server resets its sessions')
+console.log('\n[9] restart hydration from the credential store')
+authMode = 'password'
+const restarted = await createHost()
+const hydrated = await restarted.call('target.set', { sessionId: 'sess-other', target: { type: 'ssh', serverId: savedServer.id } })
+check('a fresh Host reconnects without a typed password', hydrated.ok === true, hydrated.error)
+const restartedState = await restarted.call('state', { sessionId: 'sess-other' })
+check('fresh Host reports the stored password', restartedState.ok
+  && restartedState.value.servers.find(server => server.id === savedServer.id)?.passwordStored === true)
+await restarted.fiber.dispose?.()
+
+console.log('\n[10] removing a server resets its sessions')
 const removed = await call('server.remove', { sessionId: 'sess-test', serverId: savedServer.id })
 check('remove succeeds', removed.ok === true, removed.error)
+check('removing the server deletes its credential record', credentialRecords.size === 0)
 const afterRemove = await call('state', { sessionId: 'sess-test' })
 check('removed server disappears', afterRemove.ok && !afterRemove.value.servers.some(server => server.id === savedServer.id))
 check('sessions fall back to local', afterRemove.ok && afterRemove.value.target.type === 'local')
 
-console.log('\n[10] reload from disk')
+console.log('\n[11] reload from disk')
 const { RuntimeStore } = plugin
 const reloaded = new RuntimeStore({ file: statePath })
 await reloaded.ready()
@@ -239,7 +283,7 @@ check('reloaded records keep no password key', !JSON.stringify(reloaded.listServ
 try {
   await runTests()
 } finally {
-  await fiber.dispose?.()
+  await host.fiber.dispose?.()
   await new Promise(resolve => sshServer.close(resolve))
   rmSync(tmp, { recursive: true, force: true })
 }
