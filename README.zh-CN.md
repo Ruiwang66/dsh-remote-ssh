@@ -1,5 +1,7 @@
 # DSH Remote SSH
 
+[English](./README.md) | [简体中文](./README.zh-CN.md)
+
 让 **DeepSeek Harness（DSH）** 使用原生工具直接操作远程 Linux 服务器。
 
 在对话输入框左侧选择一台已添加的服务器后，DSH 原有的 `read / write / edit / apply_patch / glob / grep / bash / terminal` 会切换到远端执行。插件不修改 DSH 源码，服务器也无需安装 DSH、本插件、Node.js 或 Python。
@@ -14,6 +16,8 @@
 - 支持 SSH Agent、私钥文件和临时密码认证。
 - 首次连接核对 SSH Host Key 指纹，指纹变化时拒绝连接。
 - DSH Host 维护并复用服务器连接，不会为每条消息重新登录。
+- 每个会话可选择不同服务器，每个 Agent 使用独立的 Provider 实例。
+- 一轮对话运行期间锁定执行环境，结束后才能切换。
 
 ## 安装
 
@@ -43,6 +47,36 @@ dsh web
 
 以后只需选择已保存的服务器。切换后模型仍然使用 DSH 官方工具，变化的只是工具背后的执行位置。
 
+## 界面与操作说明
+
+### 1. 打开执行环境选择器
+
+选择器位于对话输入框左侧。显示“本地电脑”时，官方工具在当前电脑上执行；
+点击即可展开执行环境菜单。
+
+![输入框左侧的执行环境选择器，当前为本地电脑](./assets/screenshots/environment-picker.png)
+
+### 2. 选择或管理服务器
+
+菜单列出本地电脑和已保存的 SSH 服务器。选择一台服务器后，当前会话的文件、
+搜索、Shell 和终端工具会在该服务器上执行。
+点击“添加服务器…”创建连接，点击“管理服务器…”可重连、编辑或删除已有连接。
+若会话正在运行，需要等本轮结束后再切换环境。
+
+![执行环境菜单，包含已保存的服务器以及添加和管理入口](./assets/screenshots/server-menu.png)
+
+### 3. 添加并测试连接
+
+填写名称、主机地址、端口（默认 22）、用户名、认证方式和默认工作目录。
+认证方式支持 SSH Agent、私钥文件和临时密码。
+默认工作目录填 `~` 表示远端账号的主目录；该设置用于确定默认 `cwd`，不限制其他路径的访问。
+
+点击“测试并保存”。首次连接时，需先核对页面展示的 SHA256 主机指纹再信任。
+只有 SSH 握手、SFTP 和命令执行检查全部成功，插件才会保存服务器并将当前会话切换过去。
+密码仅保存在 Host 内存，Host 重启后需要重新输入。
+
+![添加服务器弹窗，包含连接信息、认证方式和默认工作目录](./assets/screenshots/add-server.png)
+
 ## 架构
 
 ```text
@@ -71,6 +105,8 @@ DSH 官方执行接口 ctx.fs · ctx.subprocess · ctx.shell · ctx.terminals
 - 每台服务器可设置默认工作目录；它是默认 `cwd`，不是路径沙箱。
 - 实际访问能力等同于远端 SSH 账号权限；Remote Provider 不会向远端暴露 DSH Host 的本地文件系统。
 - 模型 API Key、Base URL 等仍由 DSH 管理，本插件不读取或保存。
+- 远端搜索内置 Linux x64、arm64、arm 的 ripgrep；不支持远端 `fs.watch`。
+- 升级 DSH 后需检查 Host API 兼容性并运行 [TESTING.md](./TESTING.md) 中的验证命令。
 
 ## 状态文件
 
