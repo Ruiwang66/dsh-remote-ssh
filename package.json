@@ -1,0 +1,64 @@
+{
+  "name": "dsh-remote-ssh",
+  "version": "2.0.2",
+  "description": "Run DSH's native read/write/edit/glob/grep/bash/terminal tools on a remote Linux server over SSH",
+  "type": "module",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": "./dist/index.js",
+    "./client": "./client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "src",
+    "scripts",
+    "assets",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "README.zh-CN.md",
+    "TESTING.md",
+    "HANDOFF.md"
+  ],
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "build": "node ./scripts/build-host.mjs",
+    "test": "node ./scripts/test-rpc.mjs",
+    "check": "node ./scripts/build-host.mjs && node --check src/utils.js && node --check src/store.js && node --check src/connection-manager.js && node --check src/remote-fs.js && node --check src/remote-subprocess.js && node --check src/remote-realm.js && node --check src/index.js && node --check dist/index.js && node --check client.js"
+  },
+  "devDependencies": {
+    "@vscode/ripgrep-universal": "1.18.0",
+    "esbuild": "0.28.2",
+    "ssh2": "1.17.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  },
+  "license": "MIT",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "ssh",
+    "sftp",
+    "remote-execution",
+    "remote-development",
+    "plugin"
+  ]
+}

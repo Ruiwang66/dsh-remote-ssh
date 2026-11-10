@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Remote SSH",
+    "description": "Run DSH's native file, search, shell, and terminal tools on a saved remote Linux server over SSH.",
+    "detail": "README.md"
+  }
+}

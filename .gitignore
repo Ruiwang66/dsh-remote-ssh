@@ -1,0 +1,11 @@
+node_modules/
+*.tgz
+*.log
+.env
+.env.*
+!.env.example
+state.json
+*.pem
+*.key
+.DS_Store
+Thumbs.db
