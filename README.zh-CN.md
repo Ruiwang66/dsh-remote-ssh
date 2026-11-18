@@ -21,18 +21,15 @@
 
 ## 安装
 
-在 DSH Desktop 的「设置 → 插件」中安装本地插件并指向本目录（等价于
-`dsh plugin --profile <profile> add <本目录>`），安装后重启 DSH。插件不修改 DSH 源码。
-
-支持 DSH `0.2.2-rc.1`（Web/Desktop）。从 GitHub 克隆后安装：
+支持 DSH `0.2.2-rc.1`（Web/Desktop）。在 DSH 插件管理器中输入 npm 包名，
+或通过命令安装到目标 profile：
 
 ```bat
-git clone https://github.com/Ruiwang66/dsh-remote-ssh.git
-dsh plugin --profile desktop add ./dsh-remote-ssh
+dsh plugin --profile desktop add dsh-remote-ssh-ruiwangsansanxin
 dsh web
 ```
 
-仓库已包含自包含的 `dist/` 和 Linux ripgrep 资产，安装无需构建或运行
+插件包已包含自包含的 `dist/` 和 Linux ripgrep 资产，安装无需构建或单独运行
 `npm install`。二次开发需要 Node.js 24 及匹配版本的 DSH 参考包，详见
 [HANDOFF.md](./HANDOFF.md) 和 [TESTING.md](./TESTING.md)。
 
