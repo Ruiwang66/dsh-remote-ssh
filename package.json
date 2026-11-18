@@ -1,5 +1,5 @@
 {
-  "name": "dsh-remote-ssh-ruiwangsansanxin",
+  "name": "dsh-remote-ssh",
   "version": "2.0.3",
   "description": "Run DSH's native read/write/edit/glob/grep/bash/terminal tools on a remote Linux server over SSH",
   "type": "module",

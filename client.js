@@ -1,5 +1,5 @@
 window.__ModuleLoader__.load({
-  id: 'dsh-remote-ssh-ruiwangsansanxin',
+  id: 'dsh-remote-ssh',
   factory: (require) => {
     const React = require('react')
     const ReactDOM = require('react-dom')

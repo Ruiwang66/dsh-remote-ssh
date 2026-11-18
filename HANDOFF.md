@@ -1,7 +1,7 @@
 # dsh-remote-ssh 交接说明（写给接手开发的 AI）
 
 > 目标读者：另一个 AI / 开发者。读完这份文档应能独立定位代码、修改功能、跑通测试，并避免踩已知的 DSH 0.2.2 组合坑。
-> 项目根目录：`E:\开发\dsh插件\dsh-remote-ssh`，npm 包名 `dsh-remote-ssh-ruiwangsansanxin`，DSH 插件 ID `dsh-remote-ssh`，当前版本 **2.0.3**。
+> 项目根目录：`E:\开发\dsh插件\dsh-remote-ssh`，包名 `dsh-remote-ssh`，当前版本 **2.0.3**。
 
 ---
 

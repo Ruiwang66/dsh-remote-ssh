@@ -21,17 +21,17 @@ After choosing a saved server next to the composer, DSH's existing `read / write
 
 ## Install
 
-Requires DSH `0.2.2-rc.1` (Web/Desktop). Add the published npm package to the
-active profile:
+Requires DSH `0.2.2-rc.1` (Web/Desktop). Clone the repository, then install
+the directory as a local bundle into the active profile:
 
 ```bat
-dsh plugin --profile desktop add dsh-remote-ssh-ruiwangsansanxin
+git clone https://github.com/Ruiwang66/dsh-remote-ssh.git
+dsh plugin --profile desktop add ./dsh-remote-ssh
 dsh web
 ```
 
-The package includes the portable `dist/` bundle and Linux ripgrep assets. DSH
-installs it directly into the profile, so a separate build or `npm install` is
-not needed.
+The repository includes the portable `dist/` bundle and Linux ripgrep assets;
+installation does not require building the plugin or running `npm install`.
 
 ## Development
 
